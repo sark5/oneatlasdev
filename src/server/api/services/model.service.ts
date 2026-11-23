@@ -210,7 +210,7 @@ export async function getModels(filters: ModelQuery) {
   const skip = (filters.page - 1) * filters.limit;
   const orderBy = sortOrders[filters.sort](filters.order);
 
-  const [models, total] = await prisma.$transaction([
+  const [models, total] = await Promise.all([
     prisma.model.findMany({
       where,
       orderBy,

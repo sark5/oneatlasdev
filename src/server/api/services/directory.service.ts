@@ -24,7 +24,7 @@ export async function getLabs(query: DirectoryQuery) {
 
   const skip = (query.page - 1) * query.limit;
 
-  const [labs, total] = await prisma.$transaction([
+  const [labs, total] = await Promise.all([
     prisma.aiLab.findMany({
       where,
       orderBy: [{ name: "asc" }, { id: "asc" }],
@@ -144,7 +144,7 @@ export async function getProviders(query: DirectoryQuery) {
 
   const skip = (query.page - 1) * query.limit;
 
-  const [providers, total] = await prisma.$transaction([
+  const [providers, total] = await Promise.all([
     prisma.provider.findMany({
       where,
       orderBy: [{ name: "asc" }, { id: "asc" }],
