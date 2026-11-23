@@ -1,0 +1,385 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// --------------------------------------------------
+// ENUMS
+// --------------------------------------------------
+
+enum ModelType {
+  CHAT
+  EMBEDDING
+  IMAGE
+  AUDIO
+  VIDEO
+  MULTIMODAL
+  RERANKER
+  OTHER
+}
+
+enum ModelStatus {
+  ACTIVE
+  PREVIEW
+  DEPRECATED
+  RETIRED
+}
+
+enum ProviderKind {
+  OFFICIAL
+  AGGREGATOR
+  CLOUD
+  OTHER
+}
+
+enum IngestionSource {
+  OPENROUTER
+  LITELLM
+  MANUAL
+}
+
+enum IngestionStatus {
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+}
+
+enum IngestionTrigger {
+  MANUAL
+  CRON
+}
+
+// --------------------------------------------------
+// 1. AI LAB
+// --------------------------------------------------
+
+model AiLab {
+  id          Int     @id @default(autoincrement())
+  slug        String  @unique
+  name        String
+  websiteUrl  String? @db.Text
+  description String? @db.Text
+  logoUrl     String? @db.Text
+  country     String? @db.VarChar(100)
+  sourceUrl   String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  models Model[]
+
+  @@index([name])
+}
+
+// --------------------------------------------------
+// 2. PROVIDER
+// --------------------------------------------------
+
+model Provider {
+  id          String       @id @default(cuid())
+  slug        String       @unique @db.VarChar(180)
+  name        String       @db.VarChar(160)
+  kind        ProviderKind @default(AGGREGATOR)
+  websiteUrl  String?      @db.Text
+  description String?      @db.Text
+  logoUrl     String?      @db.Text
+  country     String?      @db.VarChar(100)
+  sourceUrl   String?      @db.Text
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  endpoints ModelEndpoint[]
+
+  @@index([name])
+  @@index([kind])
+}
+
+// --------------------------------------------------
+// 3. CANONICAL MODEL
+// --------------------------------------------------
+
+model Model {
+  id          String      @id @default(cuid())
+  slug        String      @unique @db.VarChar(220)
+  name        String      @db.VarChar(200)
+  description String?     @db.Text
+  modelType   ModelType   @default(CHAT)
+  status      ModelStatus @default(ACTIVE)
+
+  // AI lab relationship
+  labId Int?
+  lab   AiLab? @relation(fields: [labId], references: [id], onDelete: SetNull)
+
+  // Model specifications
+  contextWindow   Int?
+  maxOutputTokens Int?
+
+  inputModalities  String[] @default([])
+  outputModalities String[] @default([])
+
+  // Nullable means the source has not confirmed this capability.
+  reasoning        Boolean?
+  toolCalling      Boolean?
+  structuredOutput Boolean?
+  openWeights      Boolean?
+
+  architecture String? @db.VarChar(160)
+  license      String? @db.VarChar(160)
+
+  // Release and lifecycle information
+  releaseDate      DateTime? @db.Date
+  deprecationDate  DateTime? @db.Date
+  successorModelId String?
+
+  successorModel Model?  @relation("ModelSuccessor", fields: [successorModelId], references: [id], onDelete: SetNull)
+  predecessors   Model[] @relation("ModelSuccessor")
+
+  // Denormalized endpoint summaries.
+  minInputPricePer1m  Decimal? @db.Decimal(20, 10)
+  minOutputPricePer1m Decimal? @db.Decimal(20, 10)
+  maxContextWindow    Int?
+
+  // Data provenance and synchronization
+  sourceUrl    String?   @db.Text
+  lastSyncedAt DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  endpoints       ModelEndpoint[]
+  benchmarkScores BenchmarkScore[]
+
+  @@index([labId])
+  @@index([modelType])
+  @@index([status])
+  @@index([minInputPricePer1m, id])
+  @@index([minOutputPricePer1m, id])
+  @@index([maxContextWindow(sort: Desc), id])
+  @@index([releaseDate(sort: Desc), id])
+  @@index([inputModalities], type: Gin)
+  @@index([outputModalities], type: Gin)
+}
+
+// --------------------------------------------------
+// 4. MODEL ENDPOINT
+// --------------------------------------------------
+
+model ModelEndpoint {
+  id String @id @default(cuid())
+
+  modelId    String
+  providerId String
+
+  model    Model    @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  providerModelId String @db.VarChar(255)
+
+  // Provider-specific information
+  isDirect      Boolean   @default(false)
+  isActive      Boolean   @default(true)
+  deactivatedAt DateTime? @db.Timestamptz(3)
+
+  contextWindow   Int?
+  maxOutputTokens Int?
+
+  inputModalities  String[] @default([])
+  outputModalities String[] @default([])
+
+  // Pricing in USD per one million tokens.
+  // NULL means unknown or not published.
+  inputPricePer1m      Decimal? @db.Decimal(20, 10)
+  outputPricePer1m     Decimal? @db.Decimal(20, 10)
+  cacheReadPricePer1m  Decimal? @db.Decimal(20, 10)
+  cacheWritePricePer1m Decimal? @db.Decimal(20, 10)
+
+  currency String @default("USD") @db.VarChar(3)
+
+  // Endpoint capabilities and operational information
+  zeroDataRetention Boolean?
+  regions           String[] @default([])
+
+  latencyMs     Decimal? @db.Decimal(10, 3)
+  uptimePercent Decimal? @db.Decimal(5, 2)
+
+  // Provenance
+  source          IngestionSource @default(OPENROUTER)
+  sourceUrl       String?         @db.Text
+  sourceUpdatedAt DateTime?       @db.Timestamptz(3)
+  lastVerifiedAt  DateTime?       @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([modelId, providerId, providerModelId])
+  @@index([modelId, isActive])
+  @@index([providerId, isActive])
+  @@index([inputPricePer1m, id])
+  @@index([outputPricePer1m, id])
+  @@index([regions], type: Gin)
+  @@index([zeroDataRetention])
+}
+
+// --------------------------------------------------
+// 5. BENCHMARK
+// --------------------------------------------------
+
+model Benchmark {
+  id          String  @id @default(cuid())
+  slug        String  @unique @db.VarChar(180)
+  name        String  @db.VarChar(180)
+  description String? @db.Text
+
+  category       String  @db.VarChar(120)
+  metricName     String  @db.VarChar(120)
+  scaleLabel     String? @db.VarChar(120)
+  higherIsBetter Boolean @default(true)
+
+  sourceUrl String? @db.Text
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  scores BenchmarkScore[]
+
+  @@index([category])
+}
+
+// --------------------------------------------------
+// 6. BENCHMARK SCORE
+// --------------------------------------------------
+
+model BenchmarkScore {
+  id String @id @default(cuid())
+
+  modelId     String
+  benchmarkId String
+
+  model     Model     @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  benchmark Benchmark @relation(fields: [benchmarkId], references: [id], onDelete: Restrict)
+
+  score      Decimal @db.Decimal(20, 8)
+  sampleSize Int?
+
+  sourceName  String  @db.VarChar(160)
+  sourceUrl   String  @db.Text
+  methodology String? @db.Text
+
+  evaluatedAt DateTime @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([modelId, benchmarkId, sourceUrl, evaluatedAt])
+  @@index([benchmarkId, evaluatedAt])
+  @@index([modelId, benchmarkId])
+}
+
+// --------------------------------------------------
+// 7. INGESTION RUN
+// --------------------------------------------------
+
+model IngestionRun {
+  id String @id @default(cuid())
+
+  source  IngestionSource
+  status  IngestionStatus  @default(RUNNING)
+  trigger IngestionTrigger @default(MANUAL)
+
+  recordsRead     Int @default(0)
+  recordsWritten  Int @default(0)
+  recordsSkipped  Int @default(0)
+  recordsRejected Int @default(0)
+
+  startedAt  DateTime  @default(now()) @db.Timestamptz(3)
+  finishedAt DateTime? @db.Timestamptz(3)
+
+  errorSummary String? @db.Text
+
+  rawSnapshots       RawModelSnapshot[]
+  quarantinedRecords QuarantinedRecord[]
+
+  @@index([source, startedAt])
+  @@index([status, startedAt])
+  @@index([source, status, finishedAt])
+}
+
+// --------------------------------------------------
+// 8. RAW MODEL SNAPSHOT
+// --------------------------------------------------
+
+model RawModelSnapshot {
+  id String @id @default(cuid())
+
+  ingestionRunId String
+
+  ingestionRun IngestionRun @relation(fields: [ingestionRunId], references: [id], onDelete: Restrict)
+
+  source      IngestionSource
+  externalId  String?         @db.VarChar(255)
+  contentHash String          @db.Char(64)
+
+  payload Json
+
+  fetchedAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([ingestionRunId, source, externalId, contentHash])
+  @@index([source, externalId, fetchedAt])
+  @@index([contentHash])
+  @@index([ingestionRunId])
+}
+
+// --------------------------------------------------
+// 9. QUARANTINED RECORD
+// --------------------------------------------------
+
+model QuarantinedRecord {
+  id String @id @default(cuid())
+
+  ingestionRunId String
+
+  ingestionRun IngestionRun @relation(fields: [ingestionRunId], references: [id], onDelete: Restrict)
+
+  source     IngestionSource
+  externalId String?         @db.VarChar(255)
+
+  payload          Json
+  reason           String @db.Text
+  validationErrors Json?
+
+  rejectedAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([ingestionRunId])
+  @@index([source, externalId])
+}
+
+// --------------------------------------------------
+// 10. APPLICATION SETTINGS
+// --------------------------------------------------
+
+model AppSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique @db.VarChar(120)
+  value     Json
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("app_settings")
+}
+
+// --------------------------------------------------
+// 11. INGESTION LEASE
+// --------------------------------------------------
+
+model IngestionLease {
+  source     IngestionSource @id
+  ownerRunId String          @db.VarChar(191)
+  expiresAt  DateTime        @db.Timestamptz(3)
+  updatedAt  DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
